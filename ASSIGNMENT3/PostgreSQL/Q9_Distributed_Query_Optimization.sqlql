@@ -1,0 +1,225 @@
+-- ============================================================================
+-- ASSIGNMENT 3 - TASK 9: DISTRIBUTED QUERY OPTIMIZATION
+-- EXPLAIN PLAN Analysis and Optimizer Strategy
+-- ============================================================================
+-- This script analyzes distributed query execution plans
+-- ============================================================================
+
+-- Step 1: Create query optimization tracking table
+CREATE TABLE IF NOT EXISTS public.query_optimization_log (
+    query_id SERIAL PRIMARY KEY,
+    query_name VARCHAR(100),
+    query_type VARCHAR(50),
+    execution_plan TEXT,
+    estimated_cost NUMERIC,
+    actual_cost NUMERIC,
+    rows_estimated INT,
+    rows_actual INT,
+    execution_time_ms NUMERIC,
+    optimization_notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Step 2: Analyze simple distributed query
+-- Simple distributed SELECT with EXPLAIN ANALYZE
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT 
+    v.violation_id,
+    v.violation_type,
+    v.severity_level,
+    f.amount_rwf,
+    f.status
+FROM node_a_kigali.violation v
+LEFT JOIN node_a_kigali.fine f ON v.violation_id = f.violation_id
+WHERE v.violation_date >= CURRENT_DATE - INTERVAL '30 days'
+LIMIT 100;
+
+-- Step 3: Analyze complex distributed join
+-- Complex join across multiple tables
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT 
+    o.badge_number,
+    o.rank,
+    COUNT(DISTINCT v.violation_id) as violations_issued,
+    COUNT(DISTINCT f.fine_id) as fines_generated,
+    SUM(f.amount_rwf) as total_fines_amount
+FROM node_a_kigali.officer o
+LEFT JOIN node_a_kigali.violation v ON o.officer_id = v.officer_id
+LEFT JOIN node_a_kigali.fine f ON v.violation_id = f.violation_id
+WHERE v.violation_date >= CURRENT_DATE - INTERVAL '90 days'
+GROUP BY o.officer_id, o.badge_number, o.rank
+HAVING COUNT(DISTINCT v.violation_id) > 0
+ORDER BY violations_issued DESC;
+
+-- Step 4: Analyze aggregation query
+-- Aggregation with GROUP BY optimization
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT 
+    EXTRACT(MONTH FROM v.violation_date) as month,
+    EXTRACT(YEAR FROM v.violation_date) as year,
+    v.severity_level,
+    COUNT(*) as violation_count,
+    AVG(f.amount_rwf) as avg_fine,
+    SUM(f.amount_rwf) as total_fines
+FROM node_a_kigali.violation v
+LEFT JOIN node_a_kigali.fine f ON v.violation_id = f.violation_id
+WHERE v.violation_date >= CURRENT_DATE - INTERVAL '1 year'
+GROUP BY EXTRACT(MONTH FROM v.violation_date), EXTRACT(YEAR FROM v.violation_date), v.severity_level
+ORDER BY year DESC, month DESC;
+
+-- Step 5: Analyze distributed union query
+-- UNION query combining data from both nodes
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT 
+    'Node A - Kigali' as region,
+    COUNT(*) as violation_count,
+    SUM(f.amount_rwf) as total_fines
+FROM node_a_kigali.violation v
+LEFT JOIN node_a_kigali.fine f ON v.violation_id = f.violation_id
+WHERE v.violation_date >= CURRENT_DATE - INTERVAL '30 days'
+UNION ALL
+SELECT 
+    'Node B - Other Regions' as region,
+    COUNT(*) as violation_count,
+    SUM(f.amount_rwf) as total_fines
+FROM node_b_regions.violation v
+LEFT JOIN node_b_regions.fine f ON v.violation_id = f.violation_id
+WHERE v.violation_date >= CURRENT_DATE - INTERVAL '30 days';
+
+-- Step 6: Analyze subquery optimization
+-- Subquery with optimization analysis
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT 
+    d.driver_id,
+    d.first_name,
+    d.last_name,
+    violation_stats.total_violations,
+    violation_stats.total_fines
+FROM node_a_kigali.driver d
+LEFT JOIN (
+    SELECT 
+        driver_id,
+        COUNT(*) as total_violations,
+        SUM(f.amount_rwf) as total_fines
+    FROM node_a_kigali.violation v
+    LEFT JOIN node_a_kigali.fine f ON v.violation_id = f.violation_id
+    WHERE v.violation_date >= CURRENT_DATE - INTERVAL '1 year'
+    GROUP BY driver_id
+) violation_stats ON d.driver_id = violation_stats.driver_id
+WHERE violation_stats.total_violations > 0
+ORDER BY violation_stats.total_violations DESC;
+
+-- Step 7: Analyze window function query
+-- Window function with optimization
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT 
+    v.violation_id,
+    v.violation_type,
+    f.amount_rwf,
+    ROW_NUMBER() OVER (PARTITION BY v.violation_type ORDER BY f.amount_rwf DESC) as rank_in_type,
+    SUM(f.amount_rwf) OVER (PARTITION BY v.violation_type) as type_total_fines
+FROM node_a_kigali.violation v
+LEFT JOIN node_a_kigali.fine f ON v.violation_id = f.violation_id
+WHERE v.violation_date >= CURRENT_DATE - INTERVAL '6 months'
+ORDER BY v.violation_type, rank_in_type;
+
+-- Step 8: Query optimization recommendations
+-- Generate optimization recommendations
+SELECT 
+    'Query Optimization Recommendations' as recommendation_type,
+    'Index on violation_date' as recommendation,
+    'Improves filtering on date ranges' as benefit,
+    'CREATE INDEX idx_violation_date ON node_a_kigali.violation(violation_date)' as implementation
+UNION ALL
+SELECT 
+    'Query Optimization Recommendations',
+    'Index on violation_type',
+    'Improves GROUP BY and filtering',
+    'CREATE INDEX idx_violation_type ON node_a_kigali.violation(violation_type)'
+UNION ALL
+SELECT 
+    'Query Optimization Recommendations',
+    'Composite index on (violation_date, severity_level)',
+    'Improves multi-column filtering',
+    'CREATE INDEX idx_violation_composite ON node_a_kigali.violation(violation_date, severity_level)'
+UNION ALL
+SELECT 
+    'Query Optimization Recommendations',
+    'Materialized view for regional statistics',
+    'Reduces repeated aggregation queries',
+    'CREATE MATERIALIZED VIEW mv_regional_stats AS SELECT ...'
+UNION ALL
+SELECT 
+    'Query Optimization Recommendations',
+    'Partition tables by date',
+    'Improves query performance on large tables',
+    'CREATE TABLE violation_2024 PARTITION OF violation FOR VALUES FROM (2024-01-01) TO (2025-01-01)';
+
+-- Step 9: Display optimizer strategy analysis
+SELECT 
+    'Optimizer Strategy Analysis' as analysis_type,
+    'Sequential Scan' as strategy,
+    'Used for small tables or full table scans' as description,
+    'Suitable for: Small result sets, no indexes' as use_case
+UNION ALL
+SELECT 
+    'Optimizer Strategy Analysis',
+    'Index Scan',
+    'Uses index to locate rows',
+    'Suitable for: Indexed columns, range queries'
+UNION ALL
+SELECT 
+    'Optimizer Strategy Analysis',
+    'Bitmap Index Scan',
+    'Combines multiple indexes efficiently',
+    'Suitable for: Multiple index conditions'
+UNION ALL
+SELECT 
+    'Optimizer Strategy Analysis',
+    'Hash Join',
+    'Efficient for joining large tables',
+    'Suitable for: Large table joins, equality conditions'
+UNION ALL
+SELECT 
+    'Optimizer Strategy Analysis',
+    'Nested Loop Join',
+    'Iterates through outer table for each inner row',
+    'Suitable for: Small inner tables, indexed lookups'
+UNION ALL
+SELECT 
+    'Optimizer Strategy Analysis',
+    'Merge Join',
+    'Joins pre-sorted data efficiently',
+    'Suitable for: Sorted data, large joins';
+
+-- Step 10: Data movement minimization analysis
+-- Analyze data movement in distributed queries
+SELECT 
+    'Data Movement Minimization' as analysis,
+    'Local filtering' as technique,
+    'Apply WHERE clauses at source node' as description,
+    'Reduces network traffic by filtering early' as benefit
+UNION ALL
+SELECT 
+    'Data Movement Minimization',
+    'Projection pushdown',
+    'Select only needed columns at source',
+    'Reduces data transfer volume'
+UNION ALL
+SELECT 
+    'Data Movement Minimization',
+    'Aggregation pushdown',
+    'Perform GROUP BY at source node',
+    'Reduces rows transferred across network'
+UNION ALL
+SELECT 
+    'Data Movement Minimization',
+    'Join pushdown',
+    'Execute joins at source when possible',
+    'Minimizes data movement between nodes'
+UNION ALL
+SELECT 
+    'Data Movement Minimization',
+    'Partition pruning',
+    'Skip partitions not matching WHERE clause',
+    'Reduces I/O and network traffic';
