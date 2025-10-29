@@ -1,0 +1,43 @@
+CREATE OR REPLACE FUNCTION fn_should_alert(
+    p_rule_key VARCHAR,
+    p_test_amount DECIMAL
+) RETURNS INTEGER AS $$
+DECLARE
+    v_threshold DECIMAL;
+    v_active CHAR(1);
+    v_current_total DECIMAL;
+BEGIN
+    -- Get the business rule
+    SELECT threshold, active 
+    INTO v_threshold, v_active
+    FROM BUSINESS_LIMITS
+    WHERE rule_key = p_rule_key;
+    
+    -- If rule doesn't exist or is inactive, allow
+    IF NOT FOUND OR v_active = 'N' THEN
+        RETURN 0;
+    END IF;
+    
+    -- Check specific rules
+    IF p_rule_key = 'MAX_DAILY_PAYMENT' THEN
+        -- Check if payment exceeds daily limit
+        IF p_test_amount > v_threshold THEN
+            RETURN 1;  -- Alert: exceeds limit
+        END IF;
+        
+    ELSIF p_rule_key = 'MAX_FINE_AMOUNT' THEN
+        -- Check if fine amount exceeds maximum
+        IF p_test_amount > v_threshold THEN
+            RETURN 1;  -- Alert: exceeds limit
+        END IF;
+        
+    ELSIF p_rule_key = 'MIN_PAYMENT_AMOUNT' THEN
+        -- Check if payment is below minimum
+        IF p_test_amount < v_threshold THEN
+            RETURN 1;  -- Alert: below minimum
+        END IF;
+    END IF;
+    
+    RETURN 0;  -- No alert
+END;
+$$ LANGUAGE plpgsql;
